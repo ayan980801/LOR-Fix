@@ -4,7 +4,14 @@ import logging
 import traceback
 import re
 import sys
-from pyspark.sql.functions import current_timestamp, lit
+from pyspark.sql.functions import (
+    current_timestamp,
+    lit,
+    sha2,
+    concat_ws,
+    col,
+)
+from delta.tables import DeltaTable
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -12,6 +19,20 @@ from tenacity import (
     before_sleep_log,
     RetryError,
 )
+
+# -------------------------------------------------
+# Choose ETL mode: "historical" or "incremental"
+# -------------------------------------------------
+ETL_MODE = "incremental"  # or "historical"
+
+"""
+ETL_MODE = "historical"
+    - Overwrites all data in ADLS and Snowflake for every table.
+ETL_MODE = "incremental"
+    - Uses a hash column to merge new/changed records only.
+    - Requires a hash column to be defined in SNOWFLAKE_TABLES mapping.
+    - If no hash column, falls back to overwrite mode.
+"""
 
 # ---------------------
 # Handle dbutils import
@@ -278,6 +299,43 @@ SNOWFLAKE_TABLES: Dict[str, Dict[str, str]] = {
 }
 
 
+def add_hash_column(df: DataFrame, table_name: str) -> DataFrame:
+    """Add a hash column for the table if configured."""
+    hash_column = SNOWFLAKE_TABLES.get(table_name, {}).get("hash_column_name")
+    if not hash_column:
+        logging.info(
+            f"No hash column configured for table {table_name}. Skipping hash generation."
+        )
+        return df
+
+    exclude_cols = {
+        "ETL_CREATED_DATE",
+        "ETL_LAST_UPDATE_DATE",
+        "CREATED_BY",
+        "TO_PROCESS",
+        "EDW_EXTERNAL_SOURCE_SYSTEM",
+    }
+
+    columns_to_hash = [c for c in df.columns if c not in exclude_cols and c != hash_column]
+    if not columns_to_hash:
+        logging.warning(f"No columns available for hashing in table {table_name}.")
+        df = df.withColumn(hash_column, sha2(lit(""), 256))
+    else:
+        df = df.withColumn(
+            hash_column,
+            sha2(concat_ws("||", *[col(c).cast("string") for c in columns_to_hash]), 256),
+        )
+
+    new_col_order = [hash_column] + [c for c in df.columns if c != hash_column]
+    df = df.select(new_col_order)
+
+    sample_values = [r[hash_column] for r in df.select(hash_column).limit(5).collect()]
+    logging.info(
+        f"Hash column {hash_column} created for table {table_name}. Samples: {sample_values}"
+    )
+    return df
+
+
 class TableDiscovery:
     def __init__(
         self, spark: SparkSession, server_details: Dict[str, str]
@@ -505,31 +563,70 @@ class DataSync:
             )
             logging.info(f"ADLS Path: {path}")
 
-            # Enable column mapping for Delta
-            df.write.format("delta").option(
-                "delta.columnMapping.mode",
-                "name",
-            ).option(
-                "delta.minReaderVersion",
-                "2",
-            ).option(
-                "delta.minWriterVersion",
-                "5",
-            ).option(
-                "mergeSchema",
-                "true",
-            ).option(
-                "overwriteSchema",
-                "true",
-            ).mode(
-                "overwrite",
-            ).save(
-                path,
-            )
+            hash_column = SNOWFLAKE_TABLES.get(table_name, {}).get("hash_column_name")
+            logging.info(f"ETL_MODE is {ETL_MODE}")
 
-            logging.info(
-                f"Data successfully written to ADLS for table: {table_name}"
-            )
+            if ETL_MODE == "historical" or not hash_column:
+                # Historical overwrite mode or no hash column available
+                df.write.format("delta").option(
+                    "delta.columnMapping.mode",
+                    "name",
+                ).option(
+                    "delta.minReaderVersion",
+                    "2",
+                ).option(
+                    "delta.minWriterVersion",
+                    "5",
+                ).option(
+                    "mergeSchema",
+                    "true",
+                ).option(
+                    "overwriteSchema",
+                    "true",
+                ).mode(
+                    "overwrite",
+                ).save(
+                    path,
+                )
+                logging.info(
+                    f"Data overwritten in ADLS for table: {table_name}"
+                )
+            else:
+                # Incremental merge mode
+                if DeltaTable.isDeltaTable(self.spark, path):
+                    delta_table = DeltaTable.forPath(self.spark, path)
+                    merge_condition = f"source.{hash_column} = target.{hash_column}"
+                    delta_table.alias("target").merge(
+                        source=df.alias("source"),
+                        condition=merge_condition,
+                    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+                    logging.info(
+                        f"Delta merge completed for table: {table_name}"
+                    )
+                else:
+                    df.write.format("delta").option(
+                        "delta.columnMapping.mode",
+                        "name",
+                    ).option(
+                        "delta.minReaderVersion",
+                        "2",
+                    ).option(
+                        "delta.minWriterVersion",
+                        "5",
+                    ).option(
+                        "mergeSchema",
+                        "true",
+                    ).option(
+                        "overwriteSchema",
+                        "true",
+                    ).mode(
+                        "overwrite",
+                    ).save(
+                        path,
+                    )
+                    logging.info(
+                        f"Initial Delta table created for table: {table_name}"
+                    )
         except Exception as e:
             logging.error(f"Error writing to ADLS for table {table_name}: {e}")
             logging.error(traceback.format_exc())
@@ -543,7 +640,7 @@ class SnowflakeLoader:
         self.config: Dict[str, str] = snowflake_config
 
     def _write_snowflake_with_retry(
-        self, df: DataFrame, table: str
+        self, df: DataFrame, table: str, mode: str = "overwrite"
     ) -> None:
         """Write DataFrame to Snowflake with retries."""
 
@@ -558,7 +655,7 @@ class SnowflakeLoader:
                 df.write.format("snowflake")
                 .options(**self.config)
                 .option("dbtable", table)
-                .mode("overwrite")
+                .mode(mode)
                 .save()
             )
 
@@ -595,41 +692,47 @@ class SnowflakeLoader:
         self, df: DataFrame, table_config: Dict[str, str]
     ) -> None:
         try:
-            logging.info(
-                f"Loading data into Snowflake table: "
-                f"{table_config['staging_table_name']}"
-            )
+            table = table_config["staging_table_name"]
+            hash_column = table_config.get("hash_column_name")
+            logging.info(f"ETL_MODE is {ETL_MODE}")
 
-            # Write to Snowflake with retries
-            self._write_snowflake_with_retry(
-                df, table_config["staging_table_name"]
-            )
+            if ETL_MODE == "historical" or not hash_column:
+                logging.info(
+                    f"Loading data into Snowflake table (overwrite): {table}"
+                )
+                self._write_snowflake_with_retry(df, table, mode="overwrite")
+            else:
+                temp_stage_table = table + "_STAGE"
+                logging.info(
+                    f"Loading data into temp Snowflake table: {temp_stage_table}"
+                )
+                self._write_snowflake_with_retry(df, temp_stage_table, mode="overwrite")
 
-            # Validate the load by checking record count in Snowflake
-            validation_query = (
-                f"SELECT COUNT(*) FROM {table_config['staging_table_name']}"
-            )
-            snowflake_count_df = self._read_snowflake_with_retry(
-                validation_query
-            )
+                set_clause = ", ".join([f"{c} = source.{c}" for c in df.columns])
+                insert_cols = ", ".join(df.columns)
+                insert_vals = ", ".join([f"source.{c}" for c in df.columns])
+                merge_sql = f"""
+                    MERGE INTO {table} AS target
+                    USING {temp_stage_table} AS source
+                    ON target.{hash_column} = source.{hash_column}
+                    WHEN MATCHED THEN UPDATE SET {set_clause}
+                    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});
+                    DROP TABLE IF EXISTS {temp_stage_table};
+                """
+                logging.info("Executing Snowflake MERGE statement")
+                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(
+                    self.config, merge_sql
+                )
 
-            # Access first column regardless of name (more robust)
+            validation_query = f"SELECT COUNT(*) FROM {table}"
+            snowflake_count_df = self._read_snowflake_with_retry(validation_query)
             snowflake_record_count = snowflake_count_df.collect()[0][0]
 
             logging.info(
-                f"Validation: Snowflake table "
-                f"{table_config['staging_table_name']} contains "
-                f"{snowflake_record_count} records after load"
+                f"Validation: Snowflake table {table} contains {snowflake_record_count} records after load"
             )
-
             logging.info(
-                f"Data successfully loaded into Snowflake table: "
-                f"{table_config['staging_table_name']}"
-            )
-            logging.warning(
-                "Snowflake load is performed in overwrite mode, which "
-                "will replace any existing data in the target staging "
-                "table. Ensure this is intended for your use case."
+                f"Data successfully loaded into Snowflake table: {table}"
             )
 
         except Exception as e:
@@ -681,7 +784,8 @@ def process_table(
             )
             return
 
-        # Add metadata columns before writing
+        # Add hash column and metadata columns
+        df = add_hash_column(df, table_name)
         df = add_metadata_columns(df)
 
         # Write to ADLS Gen2
@@ -814,10 +918,7 @@ def main() -> None:
         logging.info("LeadDepot ETL process completed successfully.")
 
         # Log special note for QA review
-        logging.info(
-            "This run uses 'overwrite' mode which ensures Snowflake tables "
-            "exactly match source tables at runtime."
-        )
+        logging.info(f"ETL run completed in '{ETL_MODE}' mode.")
     except Exception as e:
         logging.error(f"An error occurred in the main function: {e}")
         logging.error(traceback.format_exc())
