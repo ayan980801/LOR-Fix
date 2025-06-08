@@ -457,14 +457,13 @@ class DataSync:
             # Clean column names
             df = clean_column_names(df)
 
-            # Log record count
-            record_count: int = df.count()
+            # Confirm data extracted without expensive count
             logging.info(
-                f"Extracted {record_count} records from table: {table_name}"
+                f"Data extracted from table: {table_name}"
             )
 
             # Efficient empty dataframe check
-            if not df.columns or not df.head(1):
+            if not df.columns or df.rdd.isEmpty():
                 logging.warning(
                     f"No data found in table {table_name}. Skipping."
                 )
@@ -492,7 +491,7 @@ class DataSync:
     def write_to_adls(self, df: DataFrame, table_name: str) -> None:
         try:
             # Warn if DataFrame is empty
-            if df.count() == 0:
+            if df.rdd.isEmpty():
                 logging.warning(
                     f"DataFrame for table {table_name} is empty. "
                     "Skipping write to ADLS."
