@@ -1,10 +1,8 @@
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional
 from pyspark.sql import SparkSession, DataFrame
 import logging
 import traceback
-from pyspark.sql.functions import *
-from pyspark.sql.types import *
+from pyspark.sql.functions import current_timestamp, lit
 
 
 # Configure logging
@@ -433,15 +431,6 @@ def add_metadata_columns(df: DataFrame) -> DataFrame:
     )
 
 
-def validate_and_cast(df: DataFrame) -> DataFrame:
-    """
-    Validate and cast columns with O(1) space complexity.
-    Any money columns will be kept as NULL strings from the extract_table method.
-    """
-    # Return Validation
-    return df
-
-
 def process_table(
     table_name: str, data_sync: DataSync, snowflake_loader: SnowflakeLoader
 ) -> None:
@@ -482,9 +471,13 @@ def main() -> None:
             SparkSession.builder.appName("LeadDepotETL")
             .config(
                 "spark.jars.packages",
-                "com.microsoft.sqlserver:mssql-jdbc:9.4.1.jre8,"
-                "net.snowflake:snowflake-jdbc:3.13.8,"
-                "net.snowflake:spark-snowflake_2.12:2.9.3",
+                ",".join(
+                    [
+                        "com.microsoft.sqlserver:mssql-jdbc:9.4.1.jre8",
+                        "net.snowflake:snowflake-jdbc:3.13.8",
+                        "net.snowflake:spark-snowflake_2.12:2.9.3",
+                    ]
+                ),
             )
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
             .config(
@@ -552,20 +545,12 @@ def main() -> None:
                 logging.info(f"QA Note: Table {table} present in source database")
             else:
                 logging.warning(f"QA Note: Table {table} NOT found in source database")
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = []
-            for table_name in all_tables:
-                futures.append(
-                    executor.submit(
-                        process_table, table_name, data_sync, snowflake_loader
-                    )
-                )
-            for future in futures:
-                try:
-                    future.result()
-                except Exception as e:
-                    logging.error(f"Error processing table: {e}")
-                    logging.error(traceback.format_exc())
+        for table_name in all_tables:
+            try:
+                process_table(table_name, data_sync, snowflake_loader)
+            except Exception as e:
+                logging.error(f"Error processing table {table_name}: {e}")
+                logging.error(traceback.format_exc())
         logging.info("LeadDepot ETL process completed successfully.")
 
         # Log special note for QA review
