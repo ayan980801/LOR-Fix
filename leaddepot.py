@@ -29,8 +29,10 @@ ETL_MODE = "incremental"  # or "historical"
 ETL_MODE = "historical"
     - Overwrites all data in ADLS and Snowflake for every table.
 ETL_MODE = "incremental"
-    - Uses a hash column to merge new/changed records only.
+    - Inserts/updates new and changed records using the hash column.
+    - Deletes target records that are not present in the current source snapshot.
     - Requires a hash column to be defined in SNOWFLAKE_TABLES mapping.
+    - Only use if you are reading the FULL source table each run.
     - If no hash column, falls back to overwrite mode.
 """
 
@@ -548,14 +550,6 @@ class DataSync:
 
     def write_to_adls(self, df: DataFrame, table_name: str) -> None:
         try:
-            # Warn if DataFrame is empty
-            if df.rdd.isEmpty():
-                logging.warning(
-                    f"DataFrame for table {table_name} is empty. "
-                    "Skipping write to ADLS."
-                )
-                return
-
             logging.info(f"Writing data to ADLS for table: {table_name}")
             path: str = (
                 f"{self.azure_details['base_path']}/"
@@ -565,6 +559,23 @@ class DataSync:
 
             hash_column = SNOWFLAKE_TABLES.get(table_name, {}).get("hash_column_name")
             logging.info(f"ETL_MODE is {ETL_MODE}")
+
+            if df.rdd.isEmpty():
+                logging.warning(
+                    f"Source DataFrame for table {table_name} is empty." 
+                    "Full sync will delete all target records if they exist."
+                )
+                if ETL_MODE != "historical" and hash_column and DeltaTable.isDeltaTable(self.spark, path):
+                    delta_table = DeltaTable.forPath(self.spark, path)
+                    delta_table.delete("true")
+                    logging.info(
+                        f"All records deleted from ADLS Delta table for table: {table_name}"
+                    )
+                else:
+                    logging.warning(
+                        f"No delete performed for table {table_name} (table may not exist or ETL_MODE is historical)."
+                    )
+                return
 
             if ETL_MODE == "historical" or not hash_column:
                 # Historical overwrite mode or no hash column available
@@ -592,16 +603,22 @@ class DataSync:
                     f"Data overwritten in ADLS for table: {table_name}"
                 )
             else:
-                # Incremental merge mode
+                # Incremental merge mode with full synchronization
                 if DeltaTable.isDeltaTable(self.spark, path):
                     delta_table = DeltaTable.forPath(self.spark, path)
                     merge_condition = f"source.{hash_column} = target.{hash_column}"
+
                     delta_table.alias("target").merge(
                         source=df.alias("source"),
                         condition=merge_condition,
                     ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+
+                    temp_view = f"source_hashes_{table_name}"
+                    df.select(hash_column).distinct().createOrReplaceTempView(temp_view)
+                    delete_condition = f"{hash_column} NOT IN (SELECT {hash_column} FROM {temp_view})"
+                    deleted_count = delta_table.delete(delete_condition)
                     logging.info(
-                        f"Delta merge completed for table: {table_name}"
+                        f"Delta merge and delete completed for table: {table_name}"
                     )
                 else:
                     df.write.format("delta").option(
@@ -717,11 +734,21 @@ class SnowflakeLoader:
                     ON target.{hash_column} = source.{hash_column}
                     WHEN MATCHED THEN UPDATE SET {set_clause}
                     WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});
-                    DROP TABLE IF EXISTS {temp_stage_table};
                 """
                 logging.info("Executing Snowflake MERGE statement")
                 self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(
                     self.config, merge_sql
+                )
+
+                delete_sql = f"DELETE FROM {table} WHERE {hash_column} NOT IN (SELECT {hash_column} FROM {temp_stage_table})"
+                logging.info("Executing Snowflake DELETE statement for full sync")
+                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(
+                    self.config, delete_sql
+                )
+
+                drop_sql = f"DROP TABLE IF EXISTS {temp_stage_table}"
+                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(
+                    self.config, drop_sql
                 )
 
             validation_query = f"SELECT COUNT(*) FROM {table}"
