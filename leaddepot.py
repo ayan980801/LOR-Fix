@@ -2,26 +2,44 @@ from typing import Dict, List, Optional
 from pyspark.sql import SparkSession, DataFrame
 import logging
 import traceback
+import re
+import sys
 from pyspark.sql.functions import current_timestamp, lit
 
+# ---------------------
+# Handle dbutils import
+# ---------------------
+try:
+    dbutils  # type: ignore
+except NameError:
+    import IPython
+    dbutils = IPython.get_ipython().user_ns.get("dbutils", None)
+    if dbutils is None:
+        raise ImportError("dbutils is not available in this environment. This script is intended for Databricks.")
 
+# --------------------
 # Configure logging
+# --------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s:%(message)s",
     handlers=[logging.StreamHandler()],
 )
 
-
+# -------------------------------
+# Robust column name cleaning
+# -------------------------------
 def clean_column_names(df: DataFrame) -> DataFrame:
-    """Clean column names by replacing spaces and special characters with underscores"""
-    for column in df.columns:
-        new_column = column.replace(" ", "_").replace(".", "_")
-        df = df.withColumnRenamed(column, new_column)
-    return df
+    """Clean column names by replacing any non-alphanumeric character with underscores, check for collisions."""
+    original_cols = df.columns
+    cleaned_cols = [re.sub(r'\W+', '_', c) for c in original_cols]
+    if len(set(cleaned_cols)) != len(cleaned_cols):
+        raise ValueError(f"Column name collision detected after cleaning: {cleaned_cols}")
+    return df.toDF(*cleaned_cols)
 
-
+# ---------------------------------
 # Table mapping for Snowflake targets
+# ---------------------------------
 SNOWFLAKE_TABLES: Dict[str, Dict[str, str]] = {
     "County": {
         "snowflake_table": "STG_LDP_COUNTY",
@@ -180,7 +198,6 @@ SNOWFLAKE_TABLES: Dict[str, Dict[str, str]] = {
     },
 }
 
-
 class TableDiscovery:
     def __init__(self, spark: SparkSession, server_details: Dict[str, str]) -> None:
         self.spark: SparkSession = spark
@@ -192,10 +209,13 @@ class TableDiscovery:
             query: str = """
                 SELECT TABLE_NAME
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = 'dbo'
+                WHERE LOWER(TABLE_SCHEMA) = 'dbo'
             """
             jdbc_url: str = (
-                f"jdbc:sqlserver://{self.server_details['server_url']};databaseName=LeadDepot"
+                f"jdbc:sqlserver://{self.server_details['server_url']};"
+                "databaseName=LeadDepot;"
+                "encrypt=true;"
+                "trustServerCertificate=true;"
             )
             logging.info(f"JDBC URL: {jdbc_url}")
 
@@ -205,8 +225,6 @@ class TableDiscovery:
                 .option("query", query)
                 .option("user", self.server_details["username"])
                 .option("password", self.server_details["password"])
-                .option("encrypt", "true")
-                .option("trustServerCertificate", "true")
                 .option("tableLock", "true")
                 .load()
             )
@@ -219,7 +237,6 @@ class TableDiscovery:
             logging.error(f"Error discovering tables: {e}")
             logging.error(traceback.format_exc())
             return []
-
 
 class DataSync:
     def __init__(
@@ -249,7 +266,10 @@ class DataSync:
                 return None
             logging.info(f"Extracting data from table: {table_name}")
             jdbc_url: str = (
-                f"jdbc:sqlserver://{self.server_details['server_url']};databaseName=LeadDepot"
+                f"jdbc:sqlserver://{self.server_details['server_url']};"
+                "databaseName=LeadDepot;"
+                "encrypt=true;"
+                "trustServerCertificate=true;"
             )
 
             # First, get column information including data types
@@ -257,7 +277,7 @@ class DataSync:
             SELECT COLUMN_NAME, DATA_TYPE 
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_NAME = '{table_name}' 
-            AND TABLE_SCHEMA = 'dbo'
+            AND LOWER(TABLE_SCHEMA) = 'dbo'
             """
 
             schema_df = (
@@ -266,14 +286,17 @@ class DataSync:
                 .option("query", schema_query)
                 .option("user", self.server_details["username"])
                 .option("password", self.server_details["password"])
-                .option("encrypt", "true")
-                .option("trustServerCertificate", "true")
                 .option("tableLock", "true")
                 .load()
             )
 
             # Get all column names and their data types
             columns = [(row.COLUMN_NAME, row.DATA_TYPE) for row in schema_df.collect()]
+
+            # Log columns being replaced with NULL due to unsupported types
+            money_cols = [col for col, dtype in columns if dtype in ("money", "sql_variant")]
+            if money_cols:
+                logging.warning(f"Columns {money_cols} in table {table_name} will be replaced with NULLs due to unsupported data type.")
 
             # Get total count from the source table for logging
             count_query = f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
@@ -283,8 +306,6 @@ class DataSync:
                 .option("query", count_query)
                 .option("user", self.server_details["username"])
                 .option("password", self.server_details["password"])
-                .option("encrypt", "true")
-                .option("trustServerCertificate", "true")
                 .option("tableLock", "true")
                 .load()
             )
@@ -310,8 +331,6 @@ class DataSync:
                 .option("query", query)
                 .option("user", self.server_details["username"])
                 .option("password", self.server_details["password"])
-                .option("encrypt", "true")
-                .option("trustServerCertificate", "true")
                 .option("tableLock", "true")
                 .load()
             )
@@ -323,8 +342,8 @@ class DataSync:
             record_count: int = df.count()
             logging.info(f"Extracted {record_count} records from table: {table_name}")
 
-            # Check if dataframe is empty
-            if not df.columns or df.rdd.isEmpty():
+            # Efficient empty dataframe check
+            if not df.columns or not df.head(1):
                 logging.warning(f"No data found in table {table_name}. Skipping.")
                 return None
             return df
@@ -348,6 +367,11 @@ class DataSync:
 
     def write_to_adls(self, df: DataFrame, table_name: str) -> None:
         try:
+            # Warn if DataFrame is empty
+            if df.count() == 0:
+                logging.warning(f"DataFrame for table {table_name} is empty. Skipping write to ADLS.")
+                return
+
             logging.info(f"Writing data to ADLS for table: {table_name}")
             path: str = (
                 f"{self.azure_details['base_path']}/{self.azure_details['stage']}/LeadDepot/{table_name}"
@@ -371,7 +395,6 @@ class DataSync:
         except Exception as e:
             logging.error(f"Error writing to ADLS for table {table_name}: {e}")
             logging.error(traceback.format_exc())
-
 
 class SnowflakeLoader:
     def __init__(self, spark: SparkSession, snowflake_config: Dict[str, str]) -> None:
@@ -412,6 +435,7 @@ class SnowflakeLoader:
             logging.info(
                 f"Data successfully loaded into Snowflake table: {table_config['staging_table_name']}"
             )
+            logging.warning("Snowflake load is performed in 'overwrite' mode, which will replace any existing data in the target staging table. Ensure this is intended for your use case.")
             
         except Exception as e:
             logging.error(
@@ -419,9 +443,11 @@ class SnowflakeLoader:
             )
             logging.error(traceback.format_exc())
 
-
 def add_metadata_columns(df: DataFrame) -> DataFrame:
-    """Add the 5 metadata columns with O(1) additional space complexity"""
+    """Add the 5 metadata columns, warn if columns already exist (will be overwritten)"""
+    for col in ["ETL_CREATED_DATE", "ETL_LAST_UPDATE_DATE", "CREATED_BY", "TO_PROCESS", "EDW_EXTERNAL_SOURCE_SYSTEM"]:
+        if col in df.columns:
+            logging.warning(f"Column {col} already exists and will be overwritten in add_metadata_columns().")
     return (
         df.withColumn("ETL_CREATED_DATE", current_timestamp())
         .withColumn("ETL_LAST_UPDATE_DATE", current_timestamp())
@@ -429,7 +455,6 @@ def add_metadata_columns(df: DataFrame) -> DataFrame:
         .withColumn("TO_PROCESS", lit(True))
         .withColumn("EDW_EXTERNAL_SOURCE_SYSTEM", lit("LeadDepot"))
     )
-
 
 def process_table(
     table_name: str, data_sync: DataSync, snowflake_loader: SnowflakeLoader
@@ -461,7 +486,6 @@ def process_table(
         logging.error(f"Error processing table {table_name}: {e}")
         logging.error(traceback.format_exc())
 
-
 def main() -> None:
     try:
         logging.info("Starting the LeadDepot ETL process...")
@@ -491,34 +515,38 @@ def main() -> None:
         )
         logging.info("Spark session initialized.")
 
-
-        server_details: Dict[str, str] = {
-            "server_url": "72.27.227.41:1433",
-            "username": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-username"),
-            "password": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-password"),
-        }
-
+        try:
+            server_details: Dict[str, str] = {
+                "server_url": "72.27.227.41:1433",
+                "username": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-username"),
+                "password": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-password"),
+            }
+        except Exception as e:
+            logging.error(f"Error fetching SQL Server secrets: {e}")
+            sys.exit(1)
 
         azure_details: Dict[str, str] = {
             "base_path": "abfss://dataarchitecture@quilitydatabricks.dfs.core.windows.net",
             "stage": "RAW",
         }
 
-
-        snowflake_config: Dict[str, str] = {
-            "sfURL": "https://hmkovlx-nu26765.snowflakecomputing.com",
-            "sfUser": dbutils.secrets.get(
-                scope="key-vault-secret", key="DataProduct-SF-EDW-User"
-            ),
-            "sfPassword": dbutils.secrets.get(
-                scope="key-vault-secret", key="DataProduct-SF-EDW-Pass"
-            ),
-            "sfDatabase": "DEV",
-            "sfWarehouse": "INTEGRATION_COMPUTE_WH",
-            "sfSchema": "QUILITY_EDW_STAGE",
-            "sfRole": "SG-SNOWFLAKE-DEVELOPERS",
-        }
-
+        try:
+            snowflake_config: Dict[str, str] = {
+                "sfURL": "https://hmkovlx-nu26765.snowflakecomputing.com",
+                "sfUser": dbutils.secrets.get(
+                    scope="key-vault-secret", key="DataProduct-SF-EDW-User"
+                ),
+                "sfPassword": dbutils.secrets.get(
+                    scope="key-vault-secret", key="DataProduct-SF-EDW-Pass"
+                ),
+                "sfDatabase": "DEV",
+                "sfWarehouse": "INTEGRATION_COMPUTE_WH",
+                "sfSchema": "QUILITY_EDW_STAGE",
+                "sfRole": "SG-SNOWFLAKE-DEVELOPERS",
+            }
+        except Exception as e:
+            logging.error(f"Error fetching Snowflake secrets: {e}")
+            sys.exit(1)
 
         discovery: TableDiscovery = TableDiscovery(spark, server_details)
         data_sync: DataSync = DataSync(spark, server_details, azure_details)
@@ -528,7 +556,7 @@ def main() -> None:
         all_tables: List[str] = discovery.discover_all_tables()
         if not all_tables:
             logging.error("No tables to process. Exiting the script.")
-            return
+            sys.exit(1)
         logging.info(f"Total tables to process: {len(all_tables)}")
 
         # Log QA information tables to help with troubleshooting
@@ -560,7 +588,7 @@ def main() -> None:
     except Exception as e:
         logging.error(f"An error occurred in the main function: {e}")
         logging.error(traceback.format_exc())
-
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
