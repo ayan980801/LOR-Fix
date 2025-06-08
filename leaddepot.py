@@ -5,6 +5,13 @@ import traceback
 import re
 import sys
 from pyspark.sql.functions import current_timestamp, lit
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+    RetryError,
+)
 
 # ---------------------
 # Handle dbutils import
@@ -28,6 +35,16 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s:%(message)s",
     handlers=[logging.StreamHandler()],
 )
+
+
+def _log_retry(retry_state) -> None:
+    """Log retry attempts without exposing sensitive details."""
+    exc = retry_state.outcome.exception()
+    attempt = retry_state.attempt_number
+    func_name = retry_state.fn.__name__ if hasattr(retry_state, "fn") else "operation"
+    logging.warning(
+        f"Retry {attempt} for {func_name} due to {type(exc).__name__}" if exc else f"Retry {attempt} for {func_name}"
+    )
 
 # -------------------------------
 # Robust column name cleaning
@@ -268,6 +285,32 @@ class TableDiscovery:
         self.spark: SparkSession = spark
         self.server_details: Dict[str, str] = server_details
 
+    def _read_sql_server_with_retry(self, jdbc_url: str, query: str) -> DataFrame:
+        """Read from SQL Server with retries."""
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=1, max=8, multiplier=1),
+            before_sleep=_log_retry,
+            reraise=True,
+        )
+        def _read() -> DataFrame:
+            return (
+                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
+                .option("url", jdbc_url)
+                .option("query", query)
+                .option("user", self.server_details["username"])
+                .option("password", self.server_details["password"])
+                .option("tableLock", "true")
+                .load()
+            )
+
+        try:
+            return _read()
+        except RetryError as exc:
+            logging.error("SQL Server read failed after retries")
+            raise exc.last_attempt.exception()
+
     def discover_all_tables(self) -> List[str]:
         try:
             logging.info("Discovering all tables from the database...")
@@ -284,15 +327,7 @@ class TableDiscovery:
             )
             logging.info(f"JDBC URL: {jdbc_url}")
 
-            df: DataFrame = (
-                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
-                .option("url", jdbc_url)
-                .option("query", query)
-                .option("user", self.server_details["username"])
-                .option("password", self.server_details["password"])
-                .option("tableLock", "true")
-                .load()
-            )
+            df: DataFrame = self._read_sql_server_with_retry(jdbc_url, query)
             tables: List[str] = [row.TABLE_NAME for row in df.collect()]
             logging.info(f"Discovered tables: {tables}")
             if not tables:
@@ -319,6 +354,32 @@ class DataSync:
             "MI_LeadIntakeAnalysis",
             "MI_LeadIntakeMortgageAmounts",
         }
+
+    def _read_sql_server_with_retry(self, jdbc_url: str, query: str) -> DataFrame:
+        """Read from SQL Server with retries."""
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=1, max=8, multiplier=1),
+            before_sleep=_log_retry,
+            reraise=True,
+        )
+        def _read() -> DataFrame:
+            return (
+                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
+                .option("url", jdbc_url)
+                .option("query", query)
+                .option("user", self.server_details["username"])
+                .option("password", self.server_details["password"])
+                .option("tableLock", "true")
+                .load()
+            )
+
+        try:
+            return _read()
+        except RetryError as exc:
+            logging.error("SQL Server read failed after retries")
+            raise exc.last_attempt.exception()
 
     def extract_table(
         self, table_name: str
@@ -348,15 +409,7 @@ class DataSync:
             AND LOWER(TABLE_SCHEMA) = 'dbo'
             """
 
-            schema_df = (
-                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
-                .option("url", jdbc_url)
-                .option("query", schema_query)
-                .option("user", self.server_details["username"])
-                .option("password", self.server_details["password"])
-                .option("tableLock", "true")
-                .load()
-            )
+            schema_df = self._read_sql_server_with_retry(jdbc_url, schema_query)
 
             columns = [
                 (row.COLUMN_NAME, row.DATA_TYPE)
@@ -379,15 +432,7 @@ class DataSync:
             count_query = (
                 f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
             )
-            count_df = (
-                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
-                .option("url", jdbc_url)
-                .option("query", count_query)
-                .option("user", self.server_details["username"])
-                .option("password", self.server_details["password"])
-                .option("tableLock", "true")
-                .load()
-            )
+            count_df = self._read_sql_server_with_retry(jdbc_url, count_query)
             total_count_in_source = count_df.collect()[0].total_count
             logging.info(
                 f"Total records in source table {table_name}: "
@@ -407,15 +452,7 @@ class DataSync:
             query = f"SELECT {columns_sql} FROM dbo.{table_name}"
 
             # Load data using the constructed query
-            df = (
-                self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
-                .option("url", jdbc_url)
-                .option("query", query)
-                .option("user", self.server_details["username"])
-                .option("password", self.server_details["password"])
-                .option("tableLock", "true")
-                .load()
-            )
+            df = self._read_sql_server_with_retry(jdbc_url, query)
 
             # Clean column names
             df = clean_column_names(df)
@@ -506,6 +543,55 @@ class SnowflakeLoader:
         self.spark: SparkSession = spark
         self.config: Dict[str, str] = snowflake_config
 
+    def _write_snowflake_with_retry(
+        self, df: DataFrame, table: str
+    ) -> None:
+        """Write DataFrame to Snowflake with retries."""
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=1, max=8, multiplier=1),
+            before_sleep=_log_retry,
+            reraise=True,
+        )
+        def _write() -> None:
+            (
+                df.write.format("snowflake")
+                .options(**self.config)
+                .option("dbtable", table)
+                .mode("overwrite")
+                .save()
+            )
+
+        try:
+            _write()
+        except RetryError as exc:
+            logging.error("Snowflake write failed after retries")
+            raise exc.last_attempt.exception()
+
+    def _read_snowflake_with_retry(self, query: str) -> DataFrame:
+        """Read from Snowflake with retries."""
+
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(min=1, max=8, multiplier=1),
+            before_sleep=_log_retry,
+            reraise=True,
+        )
+        def _read() -> DataFrame:
+            return (
+                self.spark.read.format("snowflake")
+                .options(**self.config)
+                .option("query", query)
+                .load()
+            )
+
+        try:
+            return _read()
+        except RetryError as exc:
+            logging.error("Snowflake read failed after retries")
+            raise exc.last_attempt.exception()
+
     def load_to_snowflake(
         self, df: DataFrame, table_config: Dict[str, str]
     ) -> None:
@@ -515,24 +601,17 @@ class SnowflakeLoader:
                 f"{table_config['staging_table_name']}"
             )
 
-            # Write to Snowflake
-            (
-                df.write.format("snowflake")
-                .options(**self.config)
-                .option("dbtable", table_config["staging_table_name"])
-                .mode("overwrite")
-                .save()
+            # Write to Snowflake with retries
+            self._write_snowflake_with_retry(
+                df, table_config["staging_table_name"]
             )
 
             # Validate the load by checking record count in Snowflake
             validation_query = (
                 f"SELECT COUNT(*) FROM {table_config['staging_table_name']}"
             )
-            snowflake_count_df = (
-                self.spark.read.format("snowflake")
-                .options(**self.config)
-                .option("query", validation_query)
-                .load()
+            snowflake_count_df = self._read_snowflake_with_retry(
+                validation_query
             )
 
             # Access first column regardless of name (more robust)
