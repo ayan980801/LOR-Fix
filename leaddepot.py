@@ -15,7 +15,10 @@ except NameError:
     import IPython
     dbutils = IPython.get_ipython().user_ns.get("dbutils", None)
     if dbutils is None:
-        raise ImportError("dbutils is not available in this environment. This script is intended for Databricks.")
+        raise ImportError(
+            "dbutils is not available in this environment. "
+            "This script is intended for Databricks."
+        )
 
 # --------------------
 # Configure logging
@@ -29,13 +32,18 @@ logging.basicConfig(
 # -------------------------------
 # Robust column name cleaning
 # -------------------------------
+
+
 def clean_column_names(df: DataFrame) -> DataFrame:
-    """Clean column names by replacing any non-alphanumeric character with underscores, check for collisions."""
+    """Clean column names by replacing any non-alphanumeric character
+    with underscores, check for collisions."""
     original_cols = df.columns
     cleaned_cols = [re.sub(r'\W+', '_', c) for c in original_cols]
     if len(set(cleaned_cols)) != len(cleaned_cols):
-        raise ValueError(f"Column name collision detected after cleaning: {cleaned_cols}")
+        raise ValueError(
+            f"Column name collision detected after cleaning: {cleaned_cols}")
     return df.toDF(*cleaned_cols)
+
 
 # ---------------------------------
 # Table mapping for Snowflake targets
@@ -64,142 +72,199 @@ SNOWFLAKE_TABLES: Dict[str, Dict[str, str]] = {
     "DeliveryFormat": {
         "snowflake_table": "STG_LDP_DELIVERY_FORMAT",
         "hash_column_name": "STG_LDP_DELIVERY_FORMAT_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_FORMAT",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_FORMAT"
+        ),
     },
     "DeliveryLeadType": {
         "snowflake_table": "STG_LDP_DELIVERY_LEAD_TYPE",
         "hash_column_name": "STG_LDP_DELIVERY_LEAD_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_LEAD_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_LEAD_TYPE"
+        ),
     },
     "DeliveryResponse": {
         "snowflake_table": "STG_LDP_DELIVERY_RESPONSE",
         "hash_column_name": "STG_LDP_DELIVERY_RESPONSE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_RESPONSE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_RESPONSE"
+        ),
     },
     "DeliverySourceType": {
         "snowflake_table": "STG_LDP_DELIVERY_SOURCE_TYPE",
         "hash_column_name": "STG_LDP_DELIVERY_SOURCE_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_SOURCE_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_SOURCE_TYPE"
+        ),
     },
     "DeliveryStatus": {
         "snowflake_table": "STG_LDP_DELIVERY_STATUS",
         "hash_column_name": "STG_LDP_DELIVERY_STATUS_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_STATUS",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_STATUS"
+        ),
     },
     "DeliveryType": {
         "snowflake_table": "STG_LDP_DELIVERY_TYPE",
         "hash_column_name": "STG_LDP_DELIVERY_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_DELIVERY_TYPE"
+        ),
     },
     "IntakeTemp": {
         "snowflake_table": "STG_LDP_INTAKE_TEMP",
         "hash_column_name": "STG_LDP_INTAKE_TEMP_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_INTAKE_TEMP",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_INTAKE_TEMP"
+        ),
     },
     "LCRResponse": {
         "snowflake_table": "STG_LDP_LCR_RESPONSE",
         "hash_column_name": "STG_LDP_LCR_RESPONSE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LCR_RESPONSE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LCR_RESPONSE"
+        ),
     },
     "LeadAllocation": {
         "snowflake_table": "STG_LDP_LEAD_ALLOCATION",
         "hash_column_name": "STG_LDP_LEAD_ALLOCATION_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_ALLOCATION",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_ALLOCATION"
+        ),
     },
     "LeadControl": {
         "snowflake_table": "STG_LDP_LEAD_CONTROL",
         "hash_column_name": "STG_LDP_LEAD_CONTROL_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_CONTROL",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_CONTROL"
+        ),
     },
     "LeadFBMC": {
         "snowflake_table": "STG_LDP_LEAD_FBMC",
         "hash_column_name": "STG_LDP_LEAD_FBMC_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_FBMC",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_FBMC"
+        ),
     },
     "LeadIntake": {
         "snowflake_table": "STG_LDP_LEAD_INTAKE",
         "hash_column_name": "STG_LDP_LEAD_INTAKE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_INTAKE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_INTAKE"
+        ),
     },
     "LeadLEADCO": {
         "snowflake_table": "STG_LDP_LEAD_LEADCO",
         "hash_column_name": "STG_LDP_LEAD_LEADCO_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_LEADCO",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_LEADCO"
+        ),
     },
     "LeadLevel": {
         "snowflake_table": "STG_LDP_LEAD_LEVEL",
         "hash_column_name": "STG_LDP_LEAD_LEVEL_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_LEVEL",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_LEVEL"
+        ),
     },
     "LeadMAILCO": {
         "snowflake_table": "STG_LDP_LEAD_MAILCO",
         "hash_column_name": "STG_LDP_LEAD_MAILCO_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_MAILCO",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_MAILCO"
+        ),
     },
     "LeadPlum": {
         "snowflake_table": "STG_LDP_LEAD_PLUM",
         "hash_column_name": "STG_LDP_LEAD_PLUM_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_PLUM",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_PLUM"
+        ),
     },
     "LeadSFG": {
         "snowflake_table": "STG_LDP_LEAD_SFG",
         "hash_column_name": "STG_LDP_LEAD_SFG_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_SFG",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_SFG"
+        ),
     },
     "LeadType": {
         "snowflake_table": "STG_LDP_LEAD_TYPE",
         "hash_column_name": "STG_LDP_LEAD_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LEAD_TYPE"
+        ),
     },
     "Logs": {
         "snowflake_table": "STG_LDP_LOGS",
         "hash_column_name": "STG_LDP_LOGS_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LOGS",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LOGS"
+        ),
     },
     "LORLeads": {
         "snowflake_table": "STG_LDP_LOR_LEADS",
         "hash_column_name": "STG_LDP_LOR_LEADS_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_LOR_LEADS",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_LOR_LEADS"
+        ),
     },
     "PhoneBlacklist": {
         "snowflake_table": "STG_LDP_PHONE_BLACKLIST",
         "hash_column_name": "STG_LDP_PHONE_BLACKLIST_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_PHONE_BLACKLIST",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_PHONE_BLACKLIST"
+        ),
     },
     "ResponseType": {
         "snowflake_table": "STG_LDP_RESPONSE_TYPE",
         "hash_column_name": "STG_LDP_RESPONSE_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_RESPONSE_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_RESPONSE_TYPE"
+        ),
     },
     "RGILead": {
         "snowflake_table": "STG_LDP_RGI_LEAD",
         "hash_column_name": "STG_LDP_RGI_LEAD_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_RGI_LEAD",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_RGI_LEAD"
+        ),
     },
     "SourceType": {
         "snowflake_table": "STG_LDP_SOURCE_TYPE",
         "hash_column_name": "STG_LDP_SOURCE_TYPE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_SOURCE_TYPE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_SOURCE_TYPE"
+        ),
     },
     "SourceTypeChannelFunction": {
         "snowflake_table": "STG_LDP_SOURCE_TYPE_CHANNEL_FUNCTION",
         "hash_column_name": "STG_LDP_SOURCE_TYPE_CHANNEL_FUNCTION_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_SOURCE_TYPE_CHANNEL_FUNCTION",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_SOURCE_TYPE_CHANNEL_FUNCTION"
+        ),
     },
     "UTMSource": {
         "snowflake_table": "STG_LDP_UTM_SOURCE",
         "hash_column_name": "STG_LDP_UTM_SOURCE_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_UTM_SOURCE",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_UTM_SOURCE"
+        ),
     },
     "Vendor": {
         "snowflake_table": "STG_LDP_VENDOR",
         "hash_column_name": "STG_LDP_VENDOR_KEY",
-        "staging_table_name": "DEV.QUILITY_EDW_STAGE.STG_LDP_VENDOR",
+        "staging_table_name": (
+            "DEV.QUILITY_EDW_STAGE.STG_LDP_VENDOR"
+        ),
     },
 }
 
+
 class TableDiscovery:
-    def __init__(self, spark: SparkSession, server_details: Dict[str, str]) -> None:
+    def __init__(
+        self, spark: SparkSession, server_details: Dict[str, str]
+    ) -> None:
         self.spark: SparkSession = spark
         self.server_details: Dict[str, str] = server_details
 
@@ -238,6 +303,7 @@ class TableDiscovery:
             logging.error(traceback.format_exc())
             return []
 
+
 class DataSync:
     def __init__(
         self,
@@ -254,10 +320,12 @@ class DataSync:
             "MI_LeadIntakeMortgageAmounts",
         }
 
-    def extract_table(self, table_name: str) -> Optional[DataFrame]:
+    def extract_table(
+        self, table_name: str
+    ) -> Optional[DataFrame]:
         """
-        Extract data from SQL Server table with special handling for money columns.
-        Returns None if table should be skipped.
+        Extract data from SQL Server table with special handling for money
+        columns. Returns None if table should be skipped.
         """
         try:
             # Skip excluded tables immediately
@@ -274,9 +342,9 @@ class DataSync:
 
             # First, get column information including data types
             schema_query = f"""
-            SELECT COLUMN_NAME, DATA_TYPE 
+            SELECT COLUMN_NAME, DATA_TYPE
             FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = '{table_name}' 
+            WHERE TABLE_NAME = '{table_name}'
             AND LOWER(TABLE_SCHEMA) = 'dbo'
             """
 
@@ -290,16 +358,27 @@ class DataSync:
                 .load()
             )
 
-            # Get all column names and their data types
-            columns = [(row.COLUMN_NAME, row.DATA_TYPE) for row in schema_df.collect()]
+            columns = [
+                (row.COLUMN_NAME, row.DATA_TYPE)
+                for row in schema_df.collect()
+            ]
 
             # Log columns being replaced with NULL due to unsupported types
-            money_cols = [col for col, dtype in columns if dtype in ("money", "sql_variant")]
+            money_cols = [
+                col
+                for col, dtype in columns
+                if dtype in ("money", "sql_variant")
+            ]
             if money_cols:
-                logging.warning(f"Columns {money_cols} in table {table_name} will be replaced with NULLs due to unsupported data type.")
+                logging.warning(
+                    f"Columns {money_cols} in table {table_name} will be "
+                    "replaced with NULLs due to unsupported data type."
+                )
 
             # Get total count from the source table for logging
-            count_query = f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
+            count_query = (
+                f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
+            )
             count_df = (
                 self.spark.read.format("com.microsoft.sqlserver.jdbc.spark")
                 .option("url", jdbc_url)
@@ -311,14 +390,17 @@ class DataSync:
             )
             total_count_in_source = count_df.collect()[0].total_count
             logging.info(
-                f"Total records in source table {table_name}: {total_count_in_source}"
+                f"Total records in source table {table_name}: "
+                f"{total_count_in_source}"
             )
 
-            # Construct a query that selects all columns, replacing money/sql_variant columns with NULLs
+            # Construct a query that selects all columns, replacing
+            # money/sql_variant columns with NULLs
             select_parts = []
             for col_name, dtype in columns:
                 if dtype in ("money", "sql_variant"):
-                    select_parts.append(f"CAST(NULL AS VARCHAR(50)) AS [{col_name}]")
+                    select_parts.append(
+                        f"CAST(NULL AS VARCHAR(50)) AS [{col_name}]")
                 else:
                     select_parts.append(f"[{col_name}]")
             columns_sql = ", ".join(select_parts)
@@ -340,11 +422,15 @@ class DataSync:
 
             # Log record count
             record_count: int = df.count()
-            logging.info(f"Extracted {record_count} records from table: {table_name}")
+            logging.info(
+                f"Extracted {record_count} records from table: {table_name}"
+            )
 
             # Efficient empty dataframe check
             if not df.columns or not df.head(1):
-                logging.warning(f"No data found in table {table_name}. Skipping.")
+                logging.warning(
+                    f"No data found in table {table_name}. Skipping."
+                )
                 return None
             return df
         except Exception as e:
@@ -353,7 +439,8 @@ class DataSync:
             # Check for specific error messages we want to handle differently
             if "is not able to access the database" in error_msg:
                 logging.warning(
-                    f"Permission error accessing table {table_name}: {error_msg}"
+                    f"Permission error accessing table {table_name}: "
+                    f"{error_msg}"
                 )
 
                 # Add this table to excluded tables for future runs
@@ -369,44 +456,65 @@ class DataSync:
         try:
             # Warn if DataFrame is empty
             if df.count() == 0:
-                logging.warning(f"DataFrame for table {table_name} is empty. Skipping write to ADLS.")
+                logging.warning(
+                    f"DataFrame for table {table_name} is empty. "
+                    "Skipping write to ADLS."
+                )
                 return
 
             logging.info(f"Writing data to ADLS for table: {table_name}")
             path: str = (
-                f"{self.azure_details['base_path']}/{self.azure_details['stage']}/LeadDepot/{table_name}"
+                f"{self.azure_details['base_path']}/"
+                f"{self.azure_details['stage']}/LeadDepot/{table_name}"
             )
             logging.info(f"ADLS Path: {path}")
 
             # Enable column mapping for Delta
-            df.write.format("delta").option("delta.columnMapping.mode", "name").option(
-                "delta.minReaderVersion", "2"
-            ).option("delta.minWriterVersion", "5").option(
-                "mergeSchema", "true"
+            df.write.format("delta").option(
+                "delta.columnMapping.mode",
+                "name",
             ).option(
-                "overwriteSchema", "true"
+                "delta.minReaderVersion",
+                "2",
+            ).option(
+                "delta.minWriterVersion",
+                "5",
+            ).option(
+                "mergeSchema",
+                "true",
+            ).option(
+                "overwriteSchema",
+                "true",
             ).mode(
-                "overwrite"
+                "overwrite",
             ).save(
-                path
+                path,
             )
 
-            logging.info(f"Data successfully written to ADLS for table: {table_name}")
+            logging.info(
+                f"Data successfully written to ADLS for table: {table_name}"
+            )
         except Exception as e:
             logging.error(f"Error writing to ADLS for table {table_name}: {e}")
             logging.error(traceback.format_exc())
 
+
 class SnowflakeLoader:
-    def __init__(self, spark: SparkSession, snowflake_config: Dict[str, str]) -> None:
+    def __init__(
+        self, spark: SparkSession, snowflake_config: Dict[str, str]
+    ) -> None:
         self.spark: SparkSession = spark
         self.config: Dict[str, str] = snowflake_config
 
-    def load_to_snowflake(self, df: DataFrame, table_config: Dict[str, str]) -> None:
+    def load_to_snowflake(
+        self, df: DataFrame, table_config: Dict[str, str]
+    ) -> None:
         try:
             logging.info(
-                f"Loading data into Snowflake table: {table_config['staging_table_name']}"
+                f"Loading data into Snowflake table: "
+                f"{table_config['staging_table_name']}"
             )
-            
+
             # Write to Snowflake
             (
                 df.write.format("snowflake")
@@ -415,39 +523,60 @@ class SnowflakeLoader:
                 .mode("overwrite")
                 .save()
             )
-            
+
             # Validate the load by checking record count in Snowflake
-            validation_query = f"SELECT COUNT(*) FROM {table_config['staging_table_name']}"
+            validation_query = (
+                f"SELECT COUNT(*) FROM {table_config['staging_table_name']}"
+            )
             snowflake_count_df = (
                 self.spark.read.format("snowflake")
                 .options(**self.config)
                 .option("query", validation_query)
                 .load()
             )
-            
+
             # Access first column regardless of name (more robust)
             snowflake_record_count = snowflake_count_df.collect()[0][0]
-            
+
             logging.info(
-                f"Validation: Snowflake table {table_config['staging_table_name']} contains {snowflake_record_count} records after load"
+                f"Validation: Snowflake table "
+                f"{table_config['staging_table_name']} contains "
+                f"{snowflake_record_count} records after load"
             )
 
             logging.info(
-                f"Data successfully loaded into Snowflake table: {table_config['staging_table_name']}"
+                f"Data successfully loaded into Snowflake table: "
+                f"{table_config['staging_table_name']}"
             )
-            logging.warning("Snowflake load is performed in 'overwrite' mode, which will replace any existing data in the target staging table. Ensure this is intended for your use case.")
-            
+            logging.warning(
+                "Snowflake load is performed in overwrite mode, which "
+                "will replace any existing data in the target staging "
+                "table. Ensure this is intended for your use case."
+            )
+
         except Exception as e:
             logging.error(
-                f"Error loading data into Snowflake for table {table_config['staging_table_name']}: {e}"
+                f"Error loading data into Snowflake for table "
+                f"{table_config['staging_table_name']}: {e}"
             )
             logging.error(traceback.format_exc())
 
+
 def add_metadata_columns(df: DataFrame) -> DataFrame:
-    """Add the 5 metadata columns, warn if columns already exist (will be overwritten)"""
-    for col in ["ETL_CREATED_DATE", "ETL_LAST_UPDATE_DATE", "CREATED_BY", "TO_PROCESS", "EDW_EXTERNAL_SOURCE_SYSTEM"]:
+    """Add the 5 metadata columns, warn if columns already exist
+    (will be overwritten)"""
+    for col in [
+        "ETL_CREATED_DATE",
+        "ETL_LAST_UPDATE_DATE",
+        "CREATED_BY",
+        "TO_PROCESS",
+        "EDW_EXTERNAL_SOURCE_SYSTEM",
+    ]:
         if col in df.columns:
-            logging.warning(f"Column {col} already exists and will be overwritten in add_metadata_columns().")
+            logging.warning(
+                f"Column {col} already exists and will be overwritten in "
+                "add_metadata_columns()."
+            )
     return (
         df.withColumn("ETL_CREATED_DATE", current_timestamp())
         .withColumn("ETL_LAST_UPDATE_DATE", current_timestamp())
@@ -455,6 +584,7 @@ def add_metadata_columns(df: DataFrame) -> DataFrame:
         .withColumn("TO_PROCESS", lit(True))
         .withColumn("EDW_EXTERNAL_SOURCE_SYSTEM", lit("LeadDepot"))
     )
+
 
 def process_table(
     table_name: str, data_sync: DataSync, snowflake_loader: SnowflakeLoader
@@ -464,13 +594,15 @@ def process_table(
         # Extract data
         df: Optional[DataFrame] = data_sync.extract_table(table_name)
 
-        # Check if dataframe exists - it will be None for excluded tables or empty tables
+        # Check if dataframe exists - it will be None for excluded tables
+        # or empty tables
         if df is None:
             logging.warning(
-                f"Table {table_name} was excluded from processing or contains no data."
+                f"Table {table_name} was excluded from processing or "
+                "contains no data."
             )
             return
-        
+
         # Add metadata columns before writing
         df = add_metadata_columns(df)
 
@@ -479,12 +611,15 @@ def process_table(
 
         # Write to Snowflake if table is in mapping
         if table_name in SNOWFLAKE_TABLES:
-            snowflake_loader.load_to_snowflake(df, SNOWFLAKE_TABLES[table_name])
+            snowflake_loader.load_to_snowflake(
+                df, SNOWFLAKE_TABLES[table_name])
         else:
-            logging.info(f"Table {table_name} is not configured for Snowflake loading.")
+            logging.info(
+                f"Table {table_name} is not configured for Snowflake loading.")
     except Exception as e:
         logging.error(f"Error processing table {table_name}: {e}")
         logging.error(traceback.format_exc())
+
 
 def main() -> None:
     try:
@@ -503,13 +638,20 @@ def main() -> None:
                     ]
                 ),
             )
-            .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+            .config(
+                "spark.sql.extensions",
+                "io.delta.sql.DeltaSparkSessionExtension",
+            )
             .config(
                 "spark.sql.catalog.spark_catalog",
                 "org.apache.spark.sql.delta.catalog.DeltaCatalog",
             )
             .config(
-                "spark.databricks.delta.properties.defaults.columnMapping.mode", "name"
+                (
+                    "spark.databricks.delta.properties.defaults."
+                    "columnMapping.mode"
+                ),
+                "name",
             )
             .getOrCreate()
         )
@@ -518,15 +660,24 @@ def main() -> None:
         try:
             server_details: Dict[str, str] = {
                 "server_url": "72.27.227.41:1433",
-                "username": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-username"),
-                "password": dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-password"),
+                "username": dbutils.secrets.get(
+                    scope="dba-key-vault-secret",
+                    key="LDE-PROD-databricks-username",
+                ),
+                "password": dbutils.secrets.get(
+                    scope="dba-key-vault-secret",
+                    key="LDE-PROD-databricks-password",
+                ),
             }
         except Exception as e:
             logging.error(f"Error fetching SQL Server secrets: {e}")
             sys.exit(1)
 
         azure_details: Dict[str, str] = {
-            "base_path": "abfss://dataarchitecture@quilitydatabricks.dfs.core.windows.net",
+            "base_path": (
+                "abfss://dataarchitecture@quilitydatabricks."
+                "dfs.core.windows.net"
+            ),
             "stage": "RAW",
         }
 
@@ -550,7 +701,8 @@ def main() -> None:
 
         discovery: TableDiscovery = TableDiscovery(spark, server_details)
         data_sync: DataSync = DataSync(spark, server_details, azure_details)
-        snowflake_loader: SnowflakeLoader = SnowflakeLoader(spark, snowflake_config)
+        snowflake_loader: SnowflakeLoader = SnowflakeLoader(
+            spark, snowflake_config)
 
         # Discover and process all tables
         all_tables: List[str] = discovery.discover_all_tables()
@@ -570,9 +722,11 @@ def main() -> None:
         ]
         for table in qa_tables:
             if table in all_tables:
-                logging.info(f"QA Note: Table {table} present in source database")
+                logging.info(
+                    f"QA Note: Table {table} present in source database")
             else:
-                logging.warning(f"QA Note: Table {table} NOT found in source database")
+                logging.warning(
+                    f"QA Note: Table {table} NOT found in source database")
         for table_name in all_tables:
             try:
                 process_table(table_name, data_sync, snowflake_loader)
@@ -583,12 +737,14 @@ def main() -> None:
 
         # Log special note for QA review
         logging.info(
-            "This run uses 'overwrite' mode which ensures Snowflake tables exactly match source tables at runtime."
+            "This run uses 'overwrite' mode which ensures Snowflake tables "
+            "exactly match source tables at runtime."
         )
     except Exception as e:
         logging.error(f"An error occurred in the main function: {e}")
         logging.error(traceback.format_exc())
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
