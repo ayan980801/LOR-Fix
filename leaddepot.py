@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import logging
+from functools import wraps
 import re
 import sys
 import traceback
@@ -20,9 +21,28 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    before_sleep_log,
     RetryError,
 )
+
+
+def log_exceptions(default=None, exit_on_error=False):
+    """Decorator for standardized exception logging."""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as exc:  # pragma: no cover - dynamic environments
+                logging.error(f"Error in {func.__name__}: {exc}")
+                logging.error(traceback.format_exc())
+                if exit_on_error:
+                    sys.exit(1)
+                return default
+
+        return wrapper
+
+    return decorator
 
 
 @dataclass
@@ -51,6 +71,8 @@ class SnowflakeConfig:
 
 class LeadDepotETL:
     ETL_MODE: str = "incremental"  # or "historical"
+    # attach decorator for use within class
+    log_exceptions = staticmethod(log_exceptions)
 
     SNOWFLAKE_TABLES: Dict[str, Dict[str, str]] = {
         "County": {
@@ -215,7 +237,8 @@ class LeadDepotETL:
         "MI_LeadIntakeMortgageAmounts",
     }
 
-    def __init__(self) -> None:
+    def __init__(self, dbutils=None) -> None:
+        self.dbutils = dbutils or self._get_dbutils()
         self._configure_logging()
         self.spark = self._create_spark_session()
         self.server_details = self._load_server_details()
@@ -263,32 +286,39 @@ class LeadDepotETL:
         )
 
     @staticmethod
-    def _load_server_details() -> ServerDetails:
-        try:
-            return ServerDetails(
-                server_url="72.27.227.41:1433",
-                username=dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-username"),
-                password=dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-password"),
-            )
-        except Exception as e:
-            logging.error(f"Error fetching SQL Server secrets: {e}")
-            sys.exit(1)
+    def _get_dbutils():
+        """Attempt to fetch the Databricks dbutils object."""
+        try:  # pragma: no cover - environment specific
+            import IPython
 
-    @staticmethod
-    def _load_snowflake_config() -> SnowflakeConfig:
-        try:
-            return SnowflakeConfig(
-                sfURL="https://hmkovlx-nu26765.snowflakecomputing.com",
-                sfUser=dbutils.secrets.get(scope="key-vault-secret", key="DataProduct-SF-EDW-User"),
-                sfPassword=dbutils.secrets.get(scope="key-vault-secret", key="DataProduct-SF-EDW-Pass"),
-                sfDatabase="DEV",
-                sfWarehouse="INTEGRATION_COMPUTE_WH",
-                sfSchema="QUILITY_EDW_STAGE",
-                sfRole="SG-SNOWFLAKE-DEVELOPERS",
-            )
-        except Exception as e:
-            logging.error(f"Error fetching Snowflake secrets: {e}")
-            sys.exit(1)
+            return IPython.get_ipython().user_ns.get("dbutils")
+        except Exception:
+            logging.warning("dbutils not available in this environment")
+            return None
+
+    @log_exceptions(exit_on_error=True)
+    def _load_server_details(self) -> ServerDetails:
+        if not self.dbutils:
+            raise ValueError("dbutils is required to fetch SQL Server secrets")
+        return ServerDetails(
+            server_url="72.27.227.41:1433",
+            username=self.dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-username"),
+            password=self.dbutils.secrets.get(scope="dba-key-vault-secret", key="LDE-PROD-databricks-password"),
+        )
+
+    @log_exceptions(exit_on_error=True)
+    def _load_snowflake_config(self) -> SnowflakeConfig:
+        if not self.dbutils:
+            raise ValueError("dbutils is required to fetch Snowflake secrets")
+        return SnowflakeConfig(
+            sfURL="https://hmkovlx-nu26765.snowflakecomputing.com",
+            sfUser=self.dbutils.secrets.get(scope="key-vault-secret", key="DataProduct-SF-EDW-User"),
+            sfPassword=self.dbutils.secrets.get(scope="key-vault-secret", key="DataProduct-SF-EDW-Pass"),
+            sfDatabase="DEV",
+            sfWarehouse="INTEGRATION_COMPUTE_WH",
+            sfSchema="QUILITY_EDW_STAGE",
+            sfRole="SG-SNOWFLAKE-DEVELOPERS",
+        )
 
     @staticmethod
     def clean_column_names(df: DataFrame) -> DataFrame:
@@ -405,6 +435,7 @@ class LeadDepotETL:
             logging.error("Snowflake read failed after retries")
             raise exc.last_attempt.exception()
 
+    @log_exceptions(default=[])
     def discover_all_tables(self) -> List[str]:
         logging.info("Discovering all tables from the database...")
         query = """
@@ -419,18 +450,14 @@ class LeadDepotETL:
             "trustServerCertificate=true;"
         )
         logging.info(f"JDBC URL: {jdbc_url}")
-        try:
-            df = self._read_sql_server_with_retry(jdbc_url, query)
-            tables = [row.TABLE_NAME for row in df.collect()]
-            logging.info(f"Discovered tables: {tables}")
-            if not tables:
-                logging.warning("No tables found in the schema 'dbo'.")
-            return tables
-        except Exception as e:
-            logging.error(f"Error discovering tables: {e}")
-            logging.error(traceback.format_exc())
-            return []
+        df = self._read_sql_server_with_retry(jdbc_url, query)
+        tables = [row.TABLE_NAME for row in df.collect()]
+        logging.info(f"Discovered tables: {tables}")
+        if not tables:
+            logging.warning("No tables found in the schema 'dbo'.")
+        return tables
 
+    @log_exceptions(default=None)
     def extract_table(self, table_name: str) -> Optional[DataFrame]:
         if table_name in self.EXCLUDED_TABLES:
             logging.info(f"Skipping excluded table: {table_name}")
@@ -448,142 +475,125 @@ class LeadDepotETL:
             WHERE TABLE_NAME = '{table_name}'
             AND LOWER(TABLE_SCHEMA) = 'dbo'
         """
-        try:
-            schema_df = self._read_sql_server_with_retry(jdbc_url, schema_query)
-            columns = [(row.COLUMN_NAME, row.DATA_TYPE) for row in schema_df.collect()]
-            money_cols = [col for col, dtype in columns if dtype in ("money", "sql_variant")]
-            if money_cols:
-                logging.warning(
-                    f"Columns {money_cols} in table {table_name} will be replaced with NULLs due to unsupported data type."
-                )
-            count_query = f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
-            count_df = self._read_sql_server_with_retry(jdbc_url, count_query)
-            total_count_in_source = count_df.collect()[0].total_count
-            logging.info(f"Total records in source table {table_name}: {total_count_in_source}")
-            select_parts = [
-                f"CAST(NULL AS VARCHAR(50)) AS [{c}]" if dt in ("money", "sql_variant") else f"[{c}]"
-                for c, dt in columns
-            ]
-            query = f"SELECT {', '.join(select_parts)} FROM dbo.{table_name}"
-            df = self._read_sql_server_with_retry(jdbc_url, query)
-            df = self.clean_column_names(df)
-            logging.info(f"Data extracted from table: {table_name}")
-            if not df.columns or df.rdd.isEmpty():
-                logging.warning(f"No data found in table {table_name}. Skipping.")
-                return None
-            return df
-        except Exception as e:
-            error_msg = str(e)
-            if "is not able to access the database" in error_msg:
-                logging.warning(f"Permission error accessing table {table_name}: {error_msg}")
-                self.EXCLUDED_TABLES.add(table_name)
-            else:
-                logging.error(f"Error extracting table {table_name}: {e}")
-                logging.error(traceback.format_exc())
+        schema_df = self._read_sql_server_with_retry(jdbc_url, schema_query)
+        columns = [(row.COLUMN_NAME, row.DATA_TYPE) for row in schema_df.collect()]
+        money_cols = [col for col, dtype in columns if dtype in ("money", "sql_variant")]
+        if money_cols:
+            logging.warning(
+                f"Columns {money_cols} in table {table_name} will be replaced with NULLs due to unsupported data type."
+            )
+        count_query = f"SELECT COUNT(*) AS total_count FROM dbo.{table_name}"
+        count_df = self._read_sql_server_with_retry(jdbc_url, count_query)
+        total_count_in_source = count_df.collect()[0].total_count
+        logging.info(f"Total records in source table {table_name}: {total_count_in_source}")
+        select_parts = [
+            f"CAST(NULL AS VARCHAR(50)) AS [{c}]" if dt in ("money", "sql_variant") else f"[{c}]"
+            for c, dt in columns
+        ]
+        query = f"SELECT {', '.join(select_parts)} FROM dbo.{table_name}"
+        df = self._read_sql_server_with_retry(jdbc_url, query)
+        df = self.clean_column_names(df)
+        logging.info(f"Data extracted from table: {table_name}")
+        if not df.columns or df.rdd.isEmpty():
+            logging.warning(f"No data found in table {table_name}. Skipping.")
             return None
+        return df
 
+    @log_exceptions()
     def write_to_adls(self, df: DataFrame, table_name: str) -> None:
         path = f"{self.azure_details.base_path}/{self.azure_details.stage}/LeadDepot/{table_name}"
         logging.info(f"Writing data to ADLS for table: {table_name} -> {path}")
         hash_column = self.SNOWFLAKE_TABLES.get(table_name, {}).get("hash_column_name")
         logging.info(f"ETL_MODE is {self.ETL_MODE}")
-        try:
-            if df.rdd.isEmpty():
+        if df.rdd.isEmpty():
+            logging.warning(
+                f"Source DataFrame for table {table_name} is empty. Full sync will delete all target records if they exist."
+            )
+            if self.ETL_MODE != "historical" and hash_column and DeltaTable.isDeltaTable(self.spark, path):
+                delta_table = DeltaTable.forPath(self.spark, path)
+                delta_table.delete("true")
+                logging.info(f"All records deleted from ADLS Delta table for table: {table_name}")
+            else:
                 logging.warning(
-                    f"Source DataFrame for table {table_name} is empty. Full sync will delete all target records if they exist."
+                    f"No delete performed for table {table_name} (table may not exist or ETL_MODE is historical)."
                 )
-                if self.ETL_MODE != "historical" and hash_column and DeltaTable.isDeltaTable(self.spark, path):
-                    delta_table = DeltaTable.forPath(self.spark, path)
-                    delta_table.delete("true")
-                    logging.info(f"All records deleted from ADLS Delta table for table: {table_name}")
-                else:
-                    logging.warning(f"No delete performed for table {table_name} (table may not exist or ETL_MODE is historical).")
-                return
-            if self.ETL_MODE == "historical" or not hash_column:
+            return
+        if self.ETL_MODE == "historical" or not hash_column:
+            df.write.format("delta").option("delta.columnMapping.mode", "name").option(
+                "delta.minReaderVersion", "2"
+            ).option("delta.minWriterVersion", "5").option("mergeSchema", "true").option(
+                "overwriteSchema", "true"
+            ).mode("overwrite").save(path)
+            logging.info(f"Data overwritten in ADLS for table: {table_name}")
+        else:
+            if DeltaTable.isDeltaTable(self.spark, path):
+                delta_table = DeltaTable.forPath(self.spark, path)
+                merge_condition = f"source.{hash_column} = target.{hash_column}"
+                delta_table.alias("target").merge(
+                    source=df.alias("source"), condition=merge_condition
+                ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
+                temp_view = f"source_hashes_{table_name}"
+                df.select(hash_column).distinct().createOrReplaceTempView(temp_view)
+                delete_condition = f"{hash_column} NOT IN (SELECT {hash_column} FROM {temp_view})"
+                delta_table.delete(delete_condition)
+                logging.info(f"Delta merge and delete completed for table: {table_name}")
+            else:
                 df.write.format("delta").option("delta.columnMapping.mode", "name").option(
                     "delta.minReaderVersion", "2"
                 ).option("delta.minWriterVersion", "5").option("mergeSchema", "true").option(
                     "overwriteSchema", "true"
                 ).mode("overwrite").save(path)
-                logging.info(f"Data overwritten in ADLS for table: {table_name}")
-            else:
-                if DeltaTable.isDeltaTable(self.spark, path):
-                    delta_table = DeltaTable.forPath(self.spark, path)
-                    merge_condition = f"source.{hash_column} = target.{hash_column}"
-                    delta_table.alias("target").merge(
-                        source=df.alias("source"), condition=merge_condition
-                    ).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()
-                    temp_view = f"source_hashes_{table_name}"
-                    df.select(hash_column).distinct().createOrReplaceTempView(temp_view)
-                    delete_condition = f"{hash_column} NOT IN (SELECT {hash_column} FROM {temp_view})"
-                    delta_table.delete(delete_condition)
-                    logging.info(f"Delta merge and delete completed for table: {table_name}")
-                else:
-                    df.write.format("delta").option("delta.columnMapping.mode", "name").option(
-                        "delta.minReaderVersion", "2"
-                    ).option("delta.minWriterVersion", "5").option("mergeSchema", "true").option(
-                        "overwriteSchema", "true"
-                    ).mode("overwrite").save(path)
-                    logging.info(f"Initial Delta table created for table: {table_name}")
-        except Exception as e:
-            logging.error(f"Error writing to ADLS for table {table_name}: {e}")
-            logging.error(traceback.format_exc())
+                logging.info(f"Initial Delta table created for table: {table_name}")
 
+    @log_exceptions()
     def load_to_snowflake(self, df: DataFrame, table_config: Dict[str, str]) -> None:
         table = table_config["staging_table_name"]
         hash_column = table_config.get("hash_column_name")
         logging.info(f"ETL_MODE is {self.ETL_MODE}")
-        try:
-            if self.ETL_MODE == "historical" or not hash_column:
-                logging.info(f"Loading data into Snowflake table (overwrite): {table}")
-                self._write_snowflake_with_retry(df, table, mode="overwrite")
-            else:
-                temp_stage_table = table + "_STAGE"
-                logging.info(f"Loading data into temp Snowflake table: {temp_stage_table}")
-                self._write_snowflake_with_retry(df, temp_stage_table, mode="overwrite")
-                set_clause = ", ".join([f"{c} = source.{c}" for c in df.columns])
-                insert_cols = ", ".join(df.columns)
-                insert_vals = ", ".join([f"source.{c}" for c in df.columns])
-                merge_sql = f"""
-                    MERGE INTO {table} AS target
-                    USING {temp_stage_table} AS source
-                    ON target.{hash_column} = source.{hash_column}
-                    WHEN MATCHED THEN UPDATE SET {set_clause}
-                    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});
-                """
-                logging.info("Executing Snowflake MERGE statement")
-                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, merge_sql)
-                delete_sql = f"DELETE FROM {table} WHERE {hash_column} NOT IN (SELECT {hash_column} FROM {temp_stage_table})"
-                logging.info("Executing Snowflake DELETE statement for full sync")
-                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, delete_sql)
-                drop_sql = f"DROP TABLE IF EXISTS {temp_stage_table}"
-                self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, drop_sql)
-            validation_query = f"SELECT COUNT(*) FROM {table}"
-            snowflake_count_df = self._read_snowflake_with_retry(validation_query)
-            snowflake_record_count = snowflake_count_df.collect()[0][0]
-            logging.info(f"Validation: Snowflake table {table} contains {snowflake_record_count} records after load")
-            logging.info(f"Data successfully loaded into Snowflake table: {table}")
-        except Exception as e:
-            logging.error(f"Error loading data into Snowflake for table {table}: {e}")
-            logging.error(traceback.format_exc())
+        if self.ETL_MODE == "historical" or not hash_column:
+            logging.info(f"Loading data into Snowflake table (overwrite): {table}")
+            self._write_snowflake_with_retry(df, table, mode="overwrite")
+        else:
+            temp_stage_table = table + "_STAGE"
+            logging.info(f"Loading data into temp Snowflake table: {temp_stage_table}")
+            self._write_snowflake_with_retry(df, temp_stage_table, mode="overwrite")
+            set_clause = ", ".join([f"{c} = source.{c}" for c in df.columns])
+            insert_cols = ", ".join(df.columns)
+            insert_vals = ", ".join([f"source.{c}" for c in df.columns])
+            merge_sql = f"""
+                MERGE INTO {table} AS target
+                USING {temp_stage_table} AS source
+                ON target.{hash_column} = source.{hash_column}
+                WHEN MATCHED THEN UPDATE SET {set_clause}
+                WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});
+            """
+            logging.info("Executing Snowflake MERGE statement")
+            self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, merge_sql)
+            delete_sql = f"DELETE FROM {table} WHERE {hash_column} NOT IN (SELECT {hash_column} FROM {temp_stage_table})"
+            logging.info("Executing Snowflake DELETE statement for full sync")
+            self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, delete_sql)
+            drop_sql = f"DROP TABLE IF EXISTS {temp_stage_table}"
+            self.spark._sc._jvm.net.snowflake.spark.snowflake.Utils.runQuery(self.snowflake_config.__dict__, drop_sql)
+        validation_query = f"SELECT COUNT(*) FROM {table}"
+        snowflake_count_df = self._read_snowflake_with_retry(validation_query)
+        snowflake_record_count = snowflake_count_df.collect()[0][0]
+        logging.info(f"Validation: Snowflake table {table} contains {snowflake_record_count} records after load")
+        logging.info(f"Data successfully loaded into Snowflake table: {table}")
 
+    @log_exceptions()
     def process_table(self, table_name: str) -> None:
         logging.info(f"Starting to process table: {table_name}")
-        try:
-            df = self.extract_table(table_name)
-            if df is None:
-                logging.warning(f"Table {table_name} was excluded from processing or contains no data.")
-                return
-            df = self.add_hash_column(df, table_name)
-            df = self.add_metadata_columns(df)
-            self.write_to_adls(df, table_name)
-            if table_name in self.SNOWFLAKE_TABLES:
-                self.load_to_snowflake(df, self.SNOWFLAKE_TABLES[table_name])
-            else:
-                logging.info(f"Table {table_name} is not configured for Snowflake loading.")
-        except Exception as e:
-            logging.error(f"Error processing table {table_name}: {e}")
-            logging.error(traceback.format_exc())
+        df = self.extract_table(table_name)
+        if df is None:
+            logging.warning(f"Table {table_name} was excluded from processing or contains no data.")
+            return
+        df = self.add_hash_column(df, table_name)
+        df = self.add_metadata_columns(df)
+        self.write_to_adls(df, table_name)
+        if table_name in self.SNOWFLAKE_TABLES:
+            self.load_to_snowflake(df, self.SNOWFLAKE_TABLES[table_name])
+        else:
+            logging.info(f"Table {table_name} is not configured for Snowflake loading.")
 
     def run(self) -> None:
         logging.info("Starting the LeadDepot ETL process...")
@@ -599,23 +609,15 @@ class LeadDepotETL:
             else:
                 logging.warning(f"QA Note: Table {table} NOT found in source database")
         for table_name in all_tables:
-            try:
-                self.process_table(table_name)
-            except Exception as e:
-                logging.error(f"Error processing table {table_name}: {e}")
-                logging.error(traceback.format_exc())
+            self.process_table(table_name)
         logging.info("LeadDepot ETL process completed successfully.")
         logging.info(f"ETL run completed in '{self.ETL_MODE}' mode.")
 
 
+@log_exceptions(exit_on_error=True)
 def main() -> None:
-    try:
-        etl = LeadDepotETL()
-        etl.run()
-    except Exception as e:
-        logging.error(f"An error occurred in the main function: {e}")
-        logging.error(traceback.format_exc())
-        sys.exit(1)
+    etl = LeadDepotETL()
+    etl.run()
 
 
 if __name__ == "__main__":
