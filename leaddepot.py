@@ -435,6 +435,31 @@ class LeadDepotETL:
             logging.error("Snowflake read failed after retries")
             raise exc.last_attempt.exception()
 
+    def _get_watermark_path(self, table_name: str) -> str:
+        return (
+            f"dbfs:/FileStore/DataProduct/DataArchitecture/Pipelines/LeadDepot/Metadata/etl_last_update_{table_name}.txt"
+        )
+
+    def _read_watermark(self, table_name: str) -> Optional[str]:
+        path = self._get_watermark_path(table_name)
+        try:
+            df = self.spark.read.text(path)
+            watermark = df.first()[0].strip()
+            logging.info(f"Read watermark for {table_name}: {watermark}")
+            return watermark
+        except Exception as ex:
+            logging.info(
+                f"No watermark found for {table_name} at {path} (likely first run): {ex}"
+            )
+            return None
+
+    def _write_watermark(self, table_name: str, value: str):
+        path = self._get_watermark_path(table_name)
+        self.spark.createDataFrame([(value,)], ["watermark"]).coalesce(1).write.mode(
+            "overwrite"
+        ).text(path)
+        logging.info(f"Watermark for {table_name} written to {path}: {value}")
+
     @log_exceptions(default=[])
     def discover_all_tables(self) -> List[str]:
         logging.info("Discovering all tables from the database...")
@@ -490,7 +515,14 @@ class LeadDepotETL:
             f"CAST(NULL AS VARCHAR(50)) AS [{c}]" if dt in ("money", "sql_variant") else f"[{c}]"
             for c, dt in columns
         ]
+        etl_col = "ETL_LAST_UPDATE_DATE"
+        watermark = None
+        if self.ETL_MODE != "historical":
+            watermark = self._read_watermark(table_name)
         query = f"SELECT {', '.join(select_parts)} FROM dbo.{table_name}"
+        if watermark:
+            query += f" WHERE [{etl_col}] > '{watermark}'"
+            logging.info(f"Delta extract for {table_name} using query: {query}")
         df = self._read_sql_server_with_retry(jdbc_url, query)
         df = self.clean_column_names(df)
         logging.info(f"Data extracted from table: {table_name}")
@@ -594,6 +626,16 @@ class LeadDepotETL:
             self.load_to_snowflake(df, self.SNOWFLAKE_TABLES[table_name])
         else:
             logging.info(f"Table {table_name} is not configured for Snowflake loading.")
+
+        etl_col = "ETL_LAST_UPDATE_DATE"
+        if etl_col in df.columns:
+            max_val = df.agg({etl_col: "max"}).collect()[0][0]
+            if max_val:
+                self._write_watermark(table_name, str(max_val))
+            else:
+                logging.warning(f"No max value for {etl_col} in {table_name}. Watermark not updated.")
+        else:
+            logging.error(f"{etl_col} not present in data for {table_name}; cannot update watermark.")
 
     def run(self) -> None:
         logging.info("Starting the LeadDepot ETL process...")
